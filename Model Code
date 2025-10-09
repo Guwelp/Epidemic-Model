@@ -1,0 +1,545 @@
+import React, { useState, useEffect } from 'react';
+import { Play, Pause, RotateCcw, Zap, AlertCircle, TrendingUp } from 'lucide-react';
+
+const PurdueCampusVisual = () => {
+  // Campus buildings with approximate locations and populations
+  const campusBuildings = [
+    // Academic Buildings
+    { id: 1, name: 'Lawson Hall', x: 250, y: 200, population: 3000, type: 'academic' },
+    { id: 2, name: 'Mathematical Sciences', x: 350, y: 180, population: 2000, type: 'academic' },
+    { id: 3, name: 'Physics Building', x: 450, y: 200, population: 1500, type: 'academic' },
+    { id: 4, name: 'Chemistry Building', x: 550, y: 180, population: 2500, type: 'academic' },
+    { id: 5, name: 'WALC', x: 400, y: 280, population: 4000, type: 'academic' },
+    { id: 6, name: 'ENAD', x: 200, y: 300, population: 1800, type: 'academic' },
+    { id: 7, name: 'Armstrong Hall', x: 500, y: 350, population: 2200, type: 'academic' },
+    { id: 8, name: 'HSSE', x: 300, y: 380, population: 1600, type: 'academic' },
+    
+    // Residential Buildings
+    { id: 9, name: 'Cary Quad', x: 150, y: 450, population: 2500, type: 'residence', contact: 2.0 },
+    { id: 10, name: 'Earhart Hall', x: 650, y: 280, population: 1800, type: 'residence', contact: 2.0 },
+    { id: 11, name: 'Hillenbrand Hall', x: 700, y: 400, population: 2000, type: 'residence', contact: 2.0 },
+    { id: 12, name: 'Harrison Hall', x: 250, y: 480, population: 1600, type: 'residence', contact: 2.0 },
+    { id: 13, name: 'Tarkington Hall', x: 350, y: 500, population: 1400, type: 'residence', contact: 2.0 },
+    
+    // Social/Dining
+    { id: 14, name: 'PMU', x: 400, y: 400, population: 5000, type: 'social', contact: 1.8 },
+    { id: 15, name: 'Rec Center', x: 550, y: 480, population: 3000, type: 'social', contact: 1.6 },
+    { id: 16, name: 'Ford Dining', x: 450, y: 520, population: 2000, type: 'dining', contact: 1.5 },
+    { id: 17, name: 'Wiley Dining', x: 200, y: 520, population: 1800, type: 'dining', contact: 1.5 },
+    
+    // Athletics
+    { id: 18, name: 'Ross-Ade Stadium', x: 100, y: 150, population: 8000, type: 'athletic', contact: 3.0 },
+    { id: 19, name: 'Mackey Arena', x: 650, y: 150, population: 4000, type: 'athletic', contact: 2.5 }
+  ];
+
+  // Disease parameters
+  const diseaseParams = {
+    covid19: {
+      name: "COVID-19",
+      beta: 0.5,
+      sigma: 0.2,
+      gamma: 0.1,
+      color: "#ef4444"
+    },
+    influenza: {
+      name: "Influenza",
+      beta: 0.8,
+      sigma: 0.5,
+      gamma: 0.33,
+      color: "#3b82f6"
+    }
+  };
+
+  const [disease, setDisease] = useState('covid19');
+  const [isRunning, setIsRunning] = useState(false);
+  const [currentDay, setCurrentDay] = useState(0);
+  const [speed, setSpeed] = useState(100); // milliseconds per day
+  const [maskingRate, setMaskingRate] = useState(0);
+  const [socialDistancing, setSocialDistancing] = useState(0);
+  const [vaccinationRate, setVaccinationRate] = useState(0);
+  
+  // Building states - each building has SEIR compartments
+  const [buildingStates, setBuildingStates] = useState(() => 
+    campusBuildings.map(building => ({
+      id: building.id,
+      S: building.population * (1 - vaccinationRate / 100) - 2, // Susceptible
+      E: 0, // Exposed
+      I: 2, // Start with 2 infected
+      R: building.population * (vaccinationRate / 100) // Recovered/Vaccinated
+    }))
+  );
+
+  // Campus events
+  const campusEvents = [
+    { day: 20, name: "Football Game", buildings: [18], multiplier: 2.5 },
+    { day: 45, name: "Spring Break", multiplier: 0.3 },
+    { day: 52, name: "Return from Break", multiplier: 1.5 },
+    { day: 75, name: "Finals Week", multiplier: 0.6 },
+    { day: 100, name: "Homecoming", buildings: [18, 14, 15], multiplier: 2.0 }
+  ];
+
+  const getCurrentEvent = (day) => {
+    return campusEvents.find(e => 
+      day >= e.day && day < e.day + (e.duration || 7)
+    );
+  };
+
+  // Get color based on infection rate
+  const getBuildingColor = (building, state) => {
+    const totalPop = state.S + state.E + state.I + state.R;
+    const infectionRate = (state.I + state.E) / totalPop;
+    
+    if (infectionRate === 0) {
+      return '#10b981'; // Green - no infections
+    } else if (infectionRate < 0.02) {
+      return '#84cc16'; // Light green
+    } else if (infectionRate < 0.05) {
+      return '#eab308'; // Yellow
+    } else if (infectionRate < 0.10) {
+      return '#f97316'; // Orange
+    } else if (infectionRate < 0.20) {
+      return '#ef4444'; // Red
+    } else {
+      return '#991b1b'; // Dark red - severe outbreak
+    }
+  };
+
+  // Get building size based on type
+  const getBuildingSize = (type) => {
+    switch(type) {
+      case 'athletic': return { w: 60, h: 40 };
+      case 'social': return { w: 50, h: 35 };
+      case 'residence': return { w: 40, h: 40 };
+      case 'dining': return { w: 35, h: 30 };
+      default: return { w: 40, h: 30 };
+    }
+  };
+
+  // Run one step of SEIR simulation
+  const simulateStep = () => {
+    const params = diseaseParams[disease];
+    const event = getCurrentEvent(currentDay);
+    const maskEffect = 1 - (maskingRate / 100) * 0.5;
+    const distanceEffect = 1 - (socialDistancing / 100) * 0.4;
+    
+    setBuildingStates(prevStates => {
+      const newStates = prevStates.map((state, idx) => {
+        const building = campusBuildings[idx];
+        
+        // Calculate event multiplier
+        let eventMultiplier = 1.0;
+        if (event) {
+          if (event.buildings && event.buildings.includes(building.id)) {
+            eventMultiplier = event.multiplier;
+          } else if (!event.buildings) {
+            eventMultiplier = event.multiplier;
+          }
+        }
+        
+        // Building-specific contact rate
+        const contactMultiplier = building.contact || 1.0;
+        
+        // Adjusted transmission rate
+        const beta = params.beta * maskEffect * distanceEffect * eventMultiplier * contactMultiplier;
+        
+        const N = state.S + state.E + state.I + state.R;
+        
+        // SEIR equations
+        const dS = -(beta * state.S * state.I) / N;
+        const dE = (beta * state.S * state.I) / N - params.sigma * state.E;
+        const dI = params.sigma * state.E - params.gamma * state.I;
+        const dR = params.gamma * state.I;
+        
+        // Inter-building transmission (people moving between buildings)
+        const mobilityRate = 0.05; // 5% of people move between buildings daily
+        const avgInfectedRate = prevStates.reduce((sum, s) => sum + s.I, 0) / 
+                               prevStates.reduce((sum, s) => sum + s.S + s.E + s.I + s.R, 0);
+        
+        const externalExposure = mobilityRate * avgInfectedRate * state.S * beta;
+        
+        return {
+          id: state.id,
+          S: Math.max(0, state.S + dS - externalExposure * 0.1),
+          E: Math.max(0, state.E + dE + externalExposure * 0.1),
+          I: Math.max(0, state.I + dI),
+          R: Math.max(0, state.R + dR)
+        };
+      });
+      
+      return newStates;
+    });
+  };
+
+  // Animation loop
+  useEffect(() => {
+    let interval;
+    if (isRunning) {
+      interval = setInterval(() => {
+        setCurrentDay(prev => {
+          const next = prev + 1;
+          if (next >= 150) {
+            setIsRunning(false);
+            return prev;
+          }
+          return next;
+        });
+        simulateStep();
+      }, speed);
+    }
+    return () => clearInterval(interval);
+  }, [isRunning, speed, currentDay, disease, maskingRate, socialDistancing]);
+
+  const handleReset = () => {
+    setIsRunning(false);
+    setCurrentDay(0);
+    setBuildingStates(campusBuildings.map(building => ({
+      id: building.id,
+      S: building.population * (1 - vaccinationRate / 100) - 2,
+      E: 0,
+      I: 2,
+      R: building.population * (vaccinationRate / 100)
+    })));
+  };
+
+  // Calculate statistics
+  const totalStats = buildingStates.reduce((acc, state) => ({
+    S: acc.S + state.S,
+    E: acc.E + state.E,
+    I: acc.I + state.I,
+    R: acc.R + state.R
+  }), { S: 0, E: 0, I: 0, R: 0 });
+
+  const totalPopulation = totalStats.S + totalStats.E + totalStats.I + totalStats.R;
+  const currentEvent = getCurrentEvent(currentDay);
+
+  return (
+    <div className="w-full h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white overflow-hidden flex flex-col">
+      {/* Header */}
+      <div className="bg-gray-800 border-b border-gray-700 p-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent">
+              Purdue Campus Disease Spread Visualization
+            </h1>
+            <p className="text-gray-400 text-sm">Live SEIR Model - Day {currentDay}</p>
+          </div>
+          
+          {/* Disease Selection */}
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setDisease('covid19')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                disease === 'covid19' 
+                  ? 'bg-red-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              COVID-19
+            </button>
+            <button
+              onClick={() => setDisease('influenza')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                disease === 'influenza' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Influenza
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Campus Map */}
+        <div className="flex-1 relative bg-gradient-to-br from-green-900 to-green-800 p-4">
+          <svg width="100%" height="100%" viewBox="0 0 800 600" className="border-2 border-gray-700 rounded-lg shadow-2xl bg-green-950">
+            {/* Grid background */}
+            <defs>
+              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1f2937" strokeWidth="0.5"/>
+              </pattern>
+            </defs>
+            <rect width="800" height="600" fill="url(#grid)" />
+            
+            {/* Campus paths */}
+            <path d="M 100 100 L 700 100 L 700 550 L 100 550 Z" 
+                  stroke="#374151" strokeWidth="3" fill="none" strokeDasharray="10,5"/>
+            
+            <line x1="400" y1="100" x2="400" y2="550" stroke="#374151" strokeWidth="2"/>
+            <line x1="100" y1="325" x2="700" y2="325" stroke="#374151" strokeWidth="2"/>
+            
+            {/* Buildings */}
+            {campusBuildings.map((building, idx) => {
+              const state = buildingStates[idx];
+              const size = getBuildingSize(building.type);
+              const color = getBuildingColor(building, state);
+              const infectionRate = ((state.I + state.E) / (state.S + state.E + state.I + state.R) * 100).toFixed(1);
+              
+              return (
+                <g key={building.id}>
+                  {/* Building shadow */}
+                  <rect
+                    x={building.x - size.w/2 + 3}
+                    y={building.y - size.h/2 + 3}
+                    width={size.w}
+                    height={size.h}
+                    fill="rgba(0,0,0,0.3)"
+                    rx="4"
+                  />
+                  
+                  {/* Building */}
+                  <rect
+                    x={building.x - size.w/2}
+                    y={building.y - size.h/2}
+                    width={size.w}
+                    height={size.h}
+                    fill={color}
+                    stroke="#1f2937"
+                    strokeWidth="2"
+                    rx="4"
+                    className="transition-all duration-300"
+                  />
+                  
+                  {/* Infection indicator */}
+                  {state.I > 0 && (
+                    <circle
+                      cx={building.x}
+                      cy={building.y - size.h/2 - 8}
+                      r="5"
+                      fill="#ef4444"
+                      className="animate-pulse"
+                    />
+                  )}
+                  
+                  {/* Building label */}
+                  <text
+                    x={building.x}
+                    y={building.y + size.h/2 + 15}
+                    textAnchor="middle"
+                    fontSize="10"
+                    fill="#e5e7eb"
+                    fontWeight="bold"
+                  >
+                    {building.name}
+                  </text>
+                  
+                  {/* Infection rate */}
+                  <text
+                    x={building.x}
+                    y={building.y + size.h/2 + 27}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="#fbbf24"
+                  >
+                    {infectionRate}%
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+          
+          {/* Event Notification */}
+          {currentEvent && (
+            <div className="absolute top-4 left-4 bg-purple-600 px-4 py-2 rounded-lg shadow-lg animate-pulse">
+              <div className="flex items-center space-x-2">
+                <AlertCircle className="w-5 h-5" />
+                <span className="font-semibold">{currentEvent.name}</span>
+              </div>
+            </div>
+          )}
+          
+          {/* Legend */}
+          <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-90 p-4 rounded-lg shadow-xl border border-gray-700">
+            <h4 className="font-bold mb-2 text-sm">Infection Level</h4>
+            <div className="space-y-1 text-xs">
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-green-500 rounded"></div>
+                <span>Safe (0%)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-lime-500 rounded"></div>
+                <span>Low (&lt;2%)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-yellow-500 rounded"></div>
+                <span>Moderate (2-5%)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-orange-500 rounded"></div>
+                <span>High (5-10%)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-red-600 rounded"></div>
+                <span>Very High (10-20%)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-4 bg-red-900 rounded"></div>
+                <span>Critical (&gt;20%)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Control Panel */}
+        <div className="w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto">
+          {/* Statistics */}
+          <div className="space-y-3 mb-6">
+            <div className="bg-gradient-to-r from-red-600 to-red-700 rounded-lg p-3">
+              <div className="text-xs opacity-75 mb-1">Active Infections</div>
+              <div className="text-2xl font-bold">{Math.round(totalStats.I).toLocaleString()}</div>
+              <div className="text-xs opacity-90">{((totalStats.I/totalPopulation)*100).toFixed(2)}% of campus</div>
+            </div>
+            
+            <div className="bg-gradient-to-r from-yellow-600 to-yellow-700 rounded-lg p-3">
+              <div className="text-xs opacity-75 mb-1">Exposed (Incubating)</div>
+              <div className="text-2xl font-bold">{Math.round(totalStats.E).toLocaleString()}</div>
+              <div className="text-xs opacity-90">{((totalStats.E/totalPopulation)*100).toFixed(2)}% of campus</div>
+            </div>
+            
+            <div className="bg-gradient-to-r from-green-600 to-green-700 rounded-lg p-3">
+              <div className="text-xs opacity-75 mb-1">Recovered/Protected</div>
+              <div className="text-2xl font-bold">{Math.round(totalStats.R).toLocaleString()}</div>
+              <div className="text-xs opacity-90">{((totalStats.R/totalPopulation)*100).toFixed(2)}% of campus</div>
+            </div>
+          </div>
+
+          {/* Simulation Controls */}
+          <div className="bg-gray-700 rounded-lg p-4 mb-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center">
+              <Play className="w-4 h-4 mr-2 text-yellow-400" />
+              Simulation Controls
+            </h3>
+            
+            <div className="space-y-3">
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setIsRunning(!isRunning)}
+                  className="flex-1 bg-yellow-600 hover:bg-yellow-700 px-3 py-2 rounded text-sm font-medium transition-all flex items-center justify-center"
+                >
+                  {isRunning ? <Pause className="w-4 h-4 mr-1" /> : <Play className="w-4 h-4 mr-1" />}
+                  {isRunning ? 'Pause' : 'Play'}
+                </button>
+                <button
+                  onClick={handleReset}
+                  className="flex-1 bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded text-sm font-medium transition-all flex items-center justify-center"
+                >
+                  <RotateCcw className="w-4 h-4 mr-1" />
+                  Reset
+                </button>
+              </div>
+              
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-medium flex items-center">
+                    <Zap className="w-3 h-3 mr-1" />
+                    Speed
+                  </label>
+                  <span className="text-xs text-yellow-400">{(1000/speed).toFixed(1)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="20"
+                  max="500"
+                  step="20"
+                  value={speed}
+                  onChange={(e) => setSpeed(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, #eab308 0%, #eab308 ${((500-speed)/(500-20))*100}%, #4b5563 ${((500-speed)/(500-20))*100}%, #4b5563 100%)`
+                  }}
+                />
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>Fast</span>
+                  <span>Slow</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Policy Interventions */}
+          <div className="bg-gray-700 rounded-lg p-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center">
+              <TrendingUp className="w-4 h-4 mr-2 text-yellow-400" />
+              Policy Interventions
+            </h3>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium mb-1 block">
+                  Masking: {maskingRate}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={maskingRate}
+                  onChange={(e) => setMaskingRate(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+              
+              <div>
+                <label className="text-xs font-medium mb-1 block">
+                  Social Distancing: {socialDistancing}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={socialDistancing}
+                  onChange={(e) => setSocialDistancing(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+              
+              <div>
+                <label className="text-xs font-medium mb-1 block">
+                  Vaccination: {vaccinationRate}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={vaccinationRate}
+                  onChange={(e) => setVaccinationRate(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Hotspot Alert */}
+          <div className="mt-4 bg-red-900 bg-opacity-40 border border-red-700 rounded-lg p-3">
+            <h4 className="text-xs font-bold mb-2 flex items-center">
+              <AlertCircle className="w-4 h-4 mr-1" />
+              High-Risk Buildings
+            </h4>
+            <div className="space-y-1 text-xs">
+              {buildingStates
+                .map((state, idx) => ({
+                  name: campusBuildings[idx].name,
+                  rate: (state.I + state.E) / (state.S + state.E + state.I + state.R)
+                }))
+                .filter(b => b.rate > 0.1)
+                .sort((a, b) => b.rate - a.rate)
+                .slice(0, 3)
+                .map((building, idx) => (
+                  <div key={idx} className="flex justify-between">
+                    <span>{building.name}</span>
+                    <span className="text-red-400">{(building.rate * 100).toFixed(1)}%</span>
+                  </div>
+                ))}
+              {buildingStates.every((state, idx) => {
+                const total = state.S + state.E + state.I + state.R;
+                return (state.I + state.E) / total <= 0.1;
+              }) && <div className="text-green-400">✓ All buildings safe</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PurdueCampusVisual;
