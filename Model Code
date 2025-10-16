@@ -1,545 +1,963 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Pause, RotateCcw, Zap, AlertCircle, TrendingUp } from 'lucide-react';
-
-const PurdueCampusVisual = () => {
-  // Campus buildings with approximate locations and populations
-  const campusBuildings = [
-    // Academic Buildings
-    { id: 1, name: 'Lawson Hall', x: 250, y: 200, population: 3000, type: 'academic' },
-    { id: 2, name: 'Mathematical Sciences', x: 350, y: 180, population: 2000, type: 'academic' },
-    { id: 3, name: 'Physics Building', x: 450, y: 200, population: 1500, type: 'academic' },
-    { id: 4, name: 'Chemistry Building', x: 550, y: 180, population: 2500, type: 'academic' },
-    { id: 5, name: 'WALC', x: 400, y: 280, population: 4000, type: 'academic' },
-    { id: 6, name: 'ENAD', x: 200, y: 300, population: 1800, type: 'academic' },
-    { id: 7, name: 'Armstrong Hall', x: 500, y: 350, population: 2200, type: 'academic' },
-    { id: 8, name: 'HSSE', x: 300, y: 380, population: 1600, type: 'academic' },
-    
-    // Residential Buildings
-    { id: 9, name: 'Cary Quad', x: 150, y: 450, population: 2500, type: 'residence', contact: 2.0 },
-    { id: 10, name: 'Earhart Hall', x: 650, y: 280, population: 1800, type: 'residence', contact: 2.0 },
-    { id: 11, name: 'Hillenbrand Hall', x: 700, y: 400, population: 2000, type: 'residence', contact: 2.0 },
-    { id: 12, name: 'Harrison Hall', x: 250, y: 480, population: 1600, type: 'residence', contact: 2.0 },
-    { id: 13, name: 'Tarkington Hall', x: 350, y: 500, population: 1400, type: 'residence', contact: 2.0 },
-    
-    // Social/Dining
-    { id: 14, name: 'PMU', x: 400, y: 400, population: 5000, type: 'social', contact: 1.8 },
-    { id: 15, name: 'Rec Center', x: 550, y: 480, population: 3000, type: 'social', contact: 1.6 },
-    { id: 16, name: 'Ford Dining', x: 450, y: 520, population: 2000, type: 'dining', contact: 1.5 },
-    { id: 17, name: 'Wiley Dining', x: 200, y: 520, population: 1800, type: 'dining', contact: 1.5 },
-    
-    // Athletics
-    { id: 18, name: 'Ross-Ade Stadium', x: 100, y: 150, population: 8000, type: 'athletic', contact: 3.0 },
-    { id: 19, name: 'Mackey Arena', x: 650, y: 150, population: 4000, type: 'athletic', contact: 2.5 }
-  ];
-
-  // Disease parameters
-  const diseaseParams = {
-    covid19: {
-      name: "COVID-19",
-      beta: 0.5,
-      sigma: 0.2,
-      gamma: 0.1,
-      color: "#ef4444"
-    },
-    influenza: {
-      name: "Influenza",
-      beta: 0.8,
-      sigma: 0.5,
-      gamma: 0.33,
-      color: "#3b82f6"
-    }
-  };
-
-  const [disease, setDisease] = useState('covid19');
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentDay, setCurrentDay] = useState(0);
-  const [speed, setSpeed] = useState(100); // milliseconds per day
-  const [maskingRate, setMaskingRate] = useState(0);
-  const [socialDistancing, setSocialDistancing] = useState(0);
-  const [vaccinationRate, setVaccinationRate] = useState(0);
-  
-  // Building states - each building has SEIR compartments
-  const [buildingStates, setBuildingStates] = useState(() => 
-    campusBuildings.map(building => ({
-      id: building.id,
-      S: building.population * (1 - vaccinationRate / 100) - 2, // Susceptible
-      E: 0, // Exposed
-      I: 2, // Start with 2 infected
-      R: building.population * (vaccinationRate / 100) // Recovered/Vaccinated
-    }))
-  );
-
-  // Campus events
-  const campusEvents = [
-    { day: 20, name: "Football Game", buildings: [18], multiplier: 2.5 },
-    { day: 45, name: "Spring Break", multiplier: 0.3 },
-    { day: 52, name: "Return from Break", multiplier: 1.5 },
-    { day: 75, name: "Finals Week", multiplier: 0.6 },
-    { day: 100, name: "Homecoming", buildings: [18, 14, 15], multiplier: 2.0 }
-  ];
-
-  const getCurrentEvent = (day) => {
-    return campusEvents.find(e => 
-      day >= e.day && day < e.day + (e.duration || 7)
-    );
-  };
-
-  // Get color based on infection rate
-  const getBuildingColor = (building, state) => {
-    const totalPop = state.S + state.E + state.I + state.R;
-    const infectionRate = (state.I + state.E) / totalPop;
-    
-    if (infectionRate === 0) {
-      return '#10b981'; // Green - no infections
-    } else if (infectionRate < 0.02) {
-      return '#84cc16'; // Light green
-    } else if (infectionRate < 0.05) {
-      return '#eab308'; // Yellow
-    } else if (infectionRate < 0.10) {
-      return '#f97316'; // Orange
-    } else if (infectionRate < 0.20) {
-      return '#ef4444'; // Red
-    } else {
-      return '#991b1b'; // Dark red - severe outbreak
-    }
-  };
-
-  // Get building size based on type
-  const getBuildingSize = (type) => {
-    switch(type) {
-      case 'athletic': return { w: 60, h: 40 };
-      case 'social': return { w: 50, h: 35 };
-      case 'residence': return { w: 40, h: 40 };
-      case 'dining': return { w: 35, h: 30 };
-      default: return { w: 40, h: 30 };
-    }
-  };
-
-  // Run one step of SEIR simulation
-  const simulateStep = () => {
-    const params = diseaseParams[disease];
-    const event = getCurrentEvent(currentDay);
-    const maskEffect = 1 - (maskingRate / 100) * 0.5;
-    const distanceEffect = 1 - (socialDistancing / 100) * 0.4;
-    
-    setBuildingStates(prevStates => {
-      const newStates = prevStates.map((state, idx) => {
-        const building = campusBuildings[idx];
-        
-        // Calculate event multiplier
-        let eventMultiplier = 1.0;
-        if (event) {
-          if (event.buildings && event.buildings.includes(building.id)) {
-            eventMultiplier = event.multiplier;
-          } else if (!event.buildings) {
-            eventMultiplier = event.multiplier;
-          }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Purdue Campus SEIRS Epidemiological Model</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        
-        // Building-specific contact rate
-        const contactMultiplier = building.contact || 1.0;
-        
-        // Adjusted transmission rate
-        const beta = params.beta * maskEffect * distanceEffect * eventMultiplier * contactMultiplier;
-        
-        const N = state.S + state.E + state.I + state.R;
-        
-        // SEIR equations
-        const dS = -(beta * state.S * state.I) / N;
-        const dE = (beta * state.S * state.I) / N - params.sigma * state.E;
-        const dI = params.sigma * state.E - params.gamma * state.I;
-        const dR = params.gamma * state.I;
-        
-        // Inter-building transmission (people moving between buildings)
-        const mobilityRate = 0.05; // 5% of people move between buildings daily
-        const avgInfectedRate = prevStates.reduce((sum, s) => sum + s.I, 0) / 
-                               prevStates.reduce((sum, s) => sum + s.S + s.E + s.I + s.R, 0);
-        
-        const externalExposure = mobilityRate * avgInfectedRate * state.S * beta;
-        
-        return {
-          id: state.id,
-          S: Math.max(0, state.S + dS - externalExposure * 0.1),
-          E: Math.max(0, state.E + dE + externalExposure * 0.1),
-          I: Math.max(0, state.I + dI),
-          R: Math.max(0, state.R + dR)
-        };
-      });
-      
-      return newStates;
-    });
-  };
 
-  // Animation loop
-  useEffect(() => {
-    let interval;
-    if (isRunning) {
-      interval = setInterval(() => {
-        setCurrentDay(prev => {
-          const next = prev + 1;
-          if (next >= 150) {
-            setIsRunning(false);
-            return prev;
-          }
-          return next;
-        });
-        simulateStep();
-      }, speed);
-    }
-    return () => clearInterval(interval);
-  }, [isRunning, speed, currentDay, disease, maskingRate, socialDistancing]);
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            overflow-x: hidden;
+        }
 
-  const handleReset = () => {
-    setIsRunning(false);
-    setCurrentDay(0);
-    setBuildingStates(campusBuildings.map(building => ({
-      id: building.id,
-      S: building.population * (1 - vaccinationRate / 100) - 2,
-      E: 0,
-      I: 2,
-      R: building.population * (vaccinationRate / 100)
-    })));
-  };
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            height: 100vh;
+            gap: 0;
+        }
 
-  // Calculate statistics
-  const totalStats = buildingStates.reduce((acc, state) => ({
-    S: acc.S + state.S,
-    E: acc.E + state.E,
-    I: acc.I + state.I,
-    R: acc.R + state.R
-  }), { S: 0, E: 0, I: 0, R: 0 });
+        .header {
+            grid-column: 1 / -1;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border-bottom: 2px solid rgba(255, 193, 7, 0.3);
+        }
 
-  const totalPopulation = totalStats.S + totalStats.E + totalStats.I + totalStats.R;
-  const currentEvent = getCurrentEvent(currentDay);
+        .header h1 {
+            background: linear-gradient(90deg, #ffd700 0%, #ffed4e 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 28px;
+            margin-bottom: 5px;
+        }
 
-  return (
-    <div className="w-full h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white overflow-hidden flex flex-col">
-      {/* Header */}
-      <div className="bg-gray-800 border-b border-gray-700 p-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent">
-              Purdue Campus Disease Spread Visualization
-            </h1>
-            <p className="text-gray-400 text-sm">Live SEIR Model - Day {currentDay}</p>
-          </div>
-          
-          {/* Disease Selection */}
-          <div className="flex space-x-2">
-            <button
-              onClick={() => setDisease('covid19')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                disease === 'covid19' 
-                  ? 'bg-red-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              COVID-19
-            </button>
-            <button
-              onClick={() => setDisease('influenza')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                disease === 'influenza' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              Influenza
-            </button>
-          </div>
+        .header p {
+            color: #aaa;
+            font-size: 14px;
+        }
+
+        .disease-selector {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .disease-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+
+        .disease-btn.active {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+        }
+
+        .disease-btn.covid {
+            background: #ef4444;
+            color: white;
+        }
+
+        .disease-btn.covid:not(.active) {
+            background: #444;
+            color: #999;
+        }
+
+        .disease-btn.flu {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .disease-btn.flu:not(.active) {
+            background: #444;
+            color: #999;
+        }
+
+        .main-view {
+            position: relative;
+            background: linear-gradient(135deg, #1a4d2e 0%, #2d5016 100%);
+            overflow: hidden;
+        }
+
+        #campusCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .event-notification {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(147, 51, 234, 0.9);
+            padding: 15px 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            animation: pulse 2s infinite;
+            display: none;
+        }
+
+        .event-notification.active {
+            display: block;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .legend h4 {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+
+        .legend-color {
+            width: 24px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        .sidebar {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            overflow-y: auto;
+            border-left: 2px solid rgba(255, 193, 7, 0.3);
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.8), rgba(220, 38, 38, 0.8));
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .stat-card.exposed {
+            background: linear-gradient(135deg, rgba(234, 179, 8, 0.8), rgba(202, 138, 4, 0.8));
+        }
+
+        .stat-card.recovered {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.8), rgba(5, 150, 105, 0.8));
+        }
+
+        .stat-card.susceptible {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.8), rgba(37, 99, 235, 0.8));
+        }
+
+        .stat-label {
+            font-size: 11px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 3px;
+        }
+
+        .stat-percent {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        .control-panel {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+
+        .control-panel h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #ffd700;
+        }
+
+        .control-btns {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .control-btn {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            font-size: 13px;
+        }
+
+        .control-btn.play {
+            background: #fbbf24;
+            color: #1a1a2e;
+        }
+
+        .control-btn.reset {
+            background: #555;
+            color: white;
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .slider-control {
+            margin-bottom: 15px;
+        }
+
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .slider-value {
+            color: #fbbf24;
+            font-weight: 600;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 5px;
+            background: #444;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fbbf24;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fbbf24;
+            cursor: pointer;
+        }
+
+        .hotspot-alert {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .hotspot-alert h4 {
+            font-size: 12px;
+            margin-bottom: 8px;
+            color: #fca5a5;
+        }
+
+        .hotspot-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            margin: 4px 0;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .hotspot-rate {
+            color: #ef4444;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            height: 200px;
+        }
+
+        canvas#timeSeriesChart {
+            max-height: 170px;
+        }
+
+        .info-text {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Purdue Campus SEIRS Epidemiological Model</h1>
+            <p>Live visualization with immunity waning - Day <span id="dayCounter">0</span></p>
+            <div class="disease-selector">
+                <button class="disease-btn covid active" onclick="setDisease('covid')">COVID-19 (R₀ = 5.0)</button>
+                <button class="disease-btn flu" onclick="setDisease('flu')">Influenza (R₀ = 2.5)</button>
+            </div>
         </div>
-      </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Campus Map */}
-        <div className="flex-1 relative bg-gradient-to-br from-green-900 to-green-800 p-4">
-          <svg width="100%" height="100%" viewBox="0 0 800 600" className="border-2 border-gray-700 rounded-lg shadow-2xl bg-green-950">
-            {/* Grid background */}
-            <defs>
-              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1f2937" strokeWidth="0.5"/>
-              </pattern>
-            </defs>
-            <rect width="800" height="600" fill="url(#grid)" />
-            
-            {/* Campus paths */}
-            <path d="M 100 100 L 700 100 L 700 550 L 100 550 Z" 
-                  stroke="#374151" strokeWidth="3" fill="none" strokeDasharray="10,5"/>
-            
-            <line x1="400" y1="100" x2="400" y2="550" stroke="#374151" strokeWidth="2"/>
-            <line x1="100" y1="325" x2="700" y2="325" stroke="#374151" strokeWidth="2"/>
-            
-            {/* Buildings */}
-            {campusBuildings.map((building, idx) => {
-              const state = buildingStates[idx];
-              const size = getBuildingSize(building.type);
-              const color = getBuildingColor(building, state);
-              const infectionRate = ((state.I + state.E) / (state.S + state.E + state.I + state.R) * 100).toFixed(1);
-              
-              return (
-                <g key={building.id}>
-                  {/* Building shadow */}
-                  <rect
-                    x={building.x - size.w/2 + 3}
-                    y={building.y - size.h/2 + 3}
-                    width={size.w}
-                    height={size.h}
-                    fill="rgba(0,0,0,0.3)"
-                    rx="4"
-                  />
-                  
-                  {/* Building */}
-                  <rect
-                    x={building.x - size.w/2}
-                    y={building.y - size.h/2}
-                    width={size.w}
-                    height={size.h}
-                    fill={color}
-                    stroke="#1f2937"
-                    strokeWidth="2"
-                    rx="4"
-                    className="transition-all duration-300"
-                  />
-                  
-                  {/* Infection indicator */}
-                  {state.I > 0 && (
-                    <circle
-                      cx={building.x}
-                      cy={building.y - size.h/2 - 8}
-                      r="5"
-                      fill="#ef4444"
-                      className="animate-pulse"
-                    />
-                  )}
-                  
-                  {/* Building label */}
-                  <text
-                    x={building.x}
-                    y={building.y + size.h/2 + 15}
-                    textAnchor="middle"
-                    fontSize="10"
-                    fill="#e5e7eb"
-                    fontWeight="bold"
-                  >
-                    {building.name}
-                  </text>
-                  
-                  {/* Infection rate */}
-                  <text
-                    x={building.x}
-                    y={building.y + size.h/2 + 27}
-                    textAnchor="middle"
-                    fontSize="9"
-                    fill="#fbbf24"
-                  >
-                    {infectionRate}%
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-          
-          {/* Event Notification */}
-          {currentEvent && (
-            <div className="absolute top-4 left-4 bg-purple-600 px-4 py-2 rounded-lg shadow-lg animate-pulse">
-              <div className="flex items-center space-x-2">
-                <AlertCircle className="w-5 h-5" />
-                <span className="font-semibold">{currentEvent.name}</span>
-              </div>
+        <div class="main-view">
+            <canvas id="campusCanvas"></canvas>
+            <div class="event-notification" id="eventNotification">
+                <strong>🎉 <span id="eventName"></span></strong>
             </div>
-          )}
-          
-          {/* Legend */}
-          <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-90 p-4 rounded-lg shadow-xl border border-gray-700">
-            <h4 className="font-bold mb-2 text-sm">Infection Level</h4>
-            <div className="space-y-1 text-xs">
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-green-500 rounded"></div>
-                <span>Safe (0%)</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-lime-500 rounded"></div>
-                <span>Low (&lt;2%)</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-yellow-500 rounded"></div>
-                <span>Moderate (2-5%)</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-orange-500 rounded"></div>
-                <span>High (5-10%)</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-red-600 rounded"></div>
-                <span>Very High (10-20%)</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-6 h-4 bg-red-900 rounded"></div>
-                <span>Critical (&gt;20%)</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Control Panel */}
-        <div className="w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto">
-          {/* Statistics */}
-          <div className="space-y-3 mb-6">
-            <div className="bg-gradient-to-r from-red-600 to-red-700 rounded-lg p-3">
-              <div className="text-xs opacity-75 mb-1">Active Infections</div>
-              <div className="text-2xl font-bold">{Math.round(totalStats.I).toLocaleString()}</div>
-              <div className="text-xs opacity-90">{((totalStats.I/totalPopulation)*100).toFixed(2)}% of campus</div>
-            </div>
-            
-            <div className="bg-gradient-to-r from-yellow-600 to-yellow-700 rounded-lg p-3">
-              <div className="text-xs opacity-75 mb-1">Exposed (Incubating)</div>
-              <div className="text-2xl font-bold">{Math.round(totalStats.E).toLocaleString()}</div>
-              <div className="text-xs opacity-90">{((totalStats.E/totalPopulation)*100).toFixed(2)}% of campus</div>
-            </div>
-            
-            <div className="bg-gradient-to-r from-green-600 to-green-700 rounded-lg p-3">
-              <div className="text-xs opacity-75 mb-1">Recovered/Protected</div>
-              <div className="text-2xl font-bold">{Math.round(totalStats.R).toLocaleString()}</div>
-              <div className="text-xs opacity-90">{((totalStats.R/totalPopulation)*100).toFixed(2)}% of campus</div>
-            </div>
-          </div>
-
-          {/* Simulation Controls */}
-          <div className="bg-gray-700 rounded-lg p-4 mb-4">
-            <h3 className="text-sm font-semibold mb-3 flex items-center">
-              <Play className="w-4 h-4 mr-2 text-yellow-400" />
-              Simulation Controls
-            </h3>
-            
-            <div className="space-y-3">
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => setIsRunning(!isRunning)}
-                  className="flex-1 bg-yellow-600 hover:bg-yellow-700 px-3 py-2 rounded text-sm font-medium transition-all flex items-center justify-center"
-                >
-                  {isRunning ? <Pause className="w-4 h-4 mr-1" /> : <Play className="w-4 h-4 mr-1" />}
-                  {isRunning ? 'Pause' : 'Play'}
-                </button>
-                <button
-                  onClick={handleReset}
-                  className="flex-1 bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded text-sm font-medium transition-all flex items-center justify-center"
-                >
-                  <RotateCcw className="w-4 h-4 mr-1" />
-                  Reset
-                </button>
-              </div>
-              
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-medium flex items-center">
-                    <Zap className="w-3 h-3 mr-1" />
-                    Speed
-                  </label>
-                  <span className="text-xs text-yellow-400">{(1000/speed).toFixed(1)}x</span>
+            <div class="legend">
+                <h4>Infection Level</h4>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #10b981;"></div>
+                    <span>Safe (0%)</span>
                 </div>
-                <input
-                  type="range"
-                  min="20"
-                  max="500"
-                  step="20"
-                  value={speed}
-                  onChange={(e) => setSpeed(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                  style={{
-                    background: `linear-gradient(to right, #eab308 0%, #eab308 ${((500-speed)/(500-20))*100}%, #4b5563 ${((500-speed)/(500-20))*100}%, #4b5563 100%)`
-                  }}
-                />
-                <div className="flex justify-between text-xs text-gray-400 mt-1">
-                  <span>Fast</span>
-                  <span>Slow</span>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #84cc16;"></div>
+                    <span>Low (&lt;2%)</span>
                 </div>
-              </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #eab308;"></div>
+                    <span>Moderate (2-5%)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #f97316;"></div>
+                    <span>High (5-10%)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ef4444;"></div>
+                    <span>Very High (10-20%)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #991b1b;"></div>
+                    <span>Critical (&gt;20%)</span>
+                </div>
             </div>
-          </div>
-
-          {/* Policy Interventions */}
-          <div className="bg-gray-700 rounded-lg p-4">
-            <h3 className="text-sm font-semibold mb-3 flex items-center">
-              <TrendingUp className="w-4 h-4 mr-2 text-yellow-400" />
-              Policy Interventions
-            </h3>
-            
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-medium mb-1 block">
-                  Masking: {maskingRate}%
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={maskingRate}
-                  onChange={(e) => setMaskingRate(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-              
-              <div>
-                <label className="text-xs font-medium mb-1 block">
-                  Social Distancing: {socialDistancing}%
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={socialDistancing}
-                  onChange={(e) => setSocialDistancing(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-              
-              <div>
-                <label className="text-xs font-medium mb-1 block">
-                  Vaccination: {vaccinationRate}%
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={vaccinationRate}
-                  onChange={(e) => setVaccinationRate(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Hotspot Alert */}
-          <div className="mt-4 bg-red-900 bg-opacity-40 border border-red-700 rounded-lg p-3">
-            <h4 className="text-xs font-bold mb-2 flex items-center">
-              <AlertCircle className="w-4 h-4 mr-1" />
-              High-Risk Buildings
-            </h4>
-            <div className="space-y-1 text-xs">
-              {buildingStates
-                .map((state, idx) => ({
-                  name: campusBuildings[idx].name,
-                  rate: (state.I + state.E) / (state.S + state.E + state.I + state.R)
-                }))
-                .filter(b => b.rate > 0.1)
-                .sort((a, b) => b.rate - a.rate)
-                .slice(0, 3)
-                .map((building, idx) => (
-                  <div key={idx} className="flex justify-between">
-                    <span>{building.name}</span>
-                    <span className="text-red-400">{(building.rate * 100).toFixed(1)}%</span>
-                  </div>
-                ))}
-              {buildingStates.every((state, idx) => {
-                const total = state.S + state.E + state.I + state.R;
-                return (state.I + state.E) / total <= 0.1;
-              }) && <div className="text-green-400">✓ All buildings safe</div>}
-            </div>
-          </div>
         </div>
-      </div>
+
+        <div class="sidebar">
+            <div class="stat-card">
+                <div class="stat-label">Active Infections</div>
+                <div class="stat-value" id="infectedCount">0</div>
+                <div class="stat-percent" id="infectedPercent">0.00% of campus</div>
+            </div>
+
+            <div class="stat-card exposed">
+                <div class="stat-label">Exposed (Incubating)</div>
+                <div class="stat-value" id="exposedCount">0</div>
+                <div class="stat-percent" id="exposedPercent">0.00% of campus</div>
+            </div>
+
+            <div class="stat-card recovered">
+                <div class="stat-label">Recovered (Immune)</div>
+                <div class="stat-value" id="recoveredCount">0</div>
+                <div class="stat-percent" id="recoveredPercent">0.00% of campus</div>
+            </div>
+
+            <div class="stat-card susceptible">
+                <div class="stat-label">Susceptible</div>
+                <div class="stat-value" id="susceptibleCount">0</div>
+                <div class="stat-percent" id="susceptiblePercent">0.00% of campus</div>
+            </div>
+
+            <div class="chart-container">
+                <canvas id="timeSeriesChart"></canvas>
+            </div>
+
+            <div class="control-panel">
+                <h3>⚡ Simulation Controls</h3>
+                <div class="control-btns">
+                    <button class="control-btn play" onclick="toggleSimulation()">
+                        <span id="playText">▶ Play</span>
+                    </button>
+                    <button class="control-btn reset" onclick="resetSimulation()">↻ Reset</button>
+                </div>
+
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Speed</span>
+                        <span class="slider-value"><span id="speedValue">10.0</span>x</span>
+                    </div>
+                    <input type="range" min="20" max="500" value="100" id="speedSlider" oninput="updateSpeed()">
+                </div>
+
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Initial Infected</span>
+                        <span class="slider-value" id="initialInfectedValue">10</span>
+                    </div>
+                    <input type="range" min="1" max="100" value="10" id="initialInfectedSlider" oninput="updateInitialInfected()">
+                </div>
+            </div>
+
+            <div class="control-panel">
+                <h3>📊 Policy Interventions</h3>
+                
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Masking</span>
+                        <span class="slider-value"><span id="maskingValue">0</span>%</span>
+                    </div>
+                    <input type="range" min="0" max="100" value="0" id="maskingSlider" oninput="updateMasking()">
+                    <div class="info-text">Reduces transmission by up to 50%</div>
+                </div>
+
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Social Distancing</span>
+                        <span class="slider-value"><span id="distancingValue">0</span>%</span>
+                    </div>
+                    <input type="range" min="0" max="100" value="0" id="distancingSlider" oninput="updateDistancing()">
+                    <div class="info-text">Reduces transmission by up to 40%</div>
+                </div>
+
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Vaccination</span>
+                        <span class="slider-value"><span id="vaccinationValue">0</span>%</span>
+                    </div>
+                    <input type="range" min="0" max="100" value="0" id="vaccinationSlider" oninput="updateVaccination()">
+                    <div class="info-text">Initial population immunity</div>
+                </div>
+
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Immunity Duration</span>
+                        <span class="slider-value"><span id="immunityValue">90</span> days</span>
+                    </div>
+                    <input type="range" min="30" max="365" value="90" id="immunitySlider" oninput="updateImmunity()">
+                    <div class="info-text">Time until recovered become susceptible</div>
+                </div>
+            </div>
+
+            <div class="hotspot-alert">
+                <h4>⚠️ High-Risk Buildings</h4>
+                <div id="hotspotList"></div>
+            </div>
+        </div>
     </div>
-  );
-};
 
-export default PurdueCampusVisual;
+    <script>
+        // Campus buildings data
+        const campusBuildings = [
+            { id: 1, name: 'Lawson', x: 250, y: 200, pop: 3000, type: 'academic' },
+            { id: 2, name: 'Math Sci', x: 350, y: 180, pop: 2000, type: 'academic' },
+            { id: 3, name: 'Physics', x: 450, y: 200, pop: 1500, type: 'academic' },
+            { id: 4, name: 'Chemistry', x: 550, y: 180, pop: 2500, type: 'academic' },
+            { id: 5, name: 'WALC', x: 400, y: 280, pop: 4000, type: 'academic' },
+            { id: 6, name: 'ENAD', x: 200, y: 300, pop: 1800, type: 'academic' },
+            { id: 7, name: 'Armstrong', x: 500, y: 350, pop: 2200, type: 'academic' },
+            { id: 8, name: 'HSSE', x: 300, y: 380, pop: 1600, type: 'academic' },
+            { id: 9, name: 'Cary Quad', x: 150, y: 450, pop: 2500, type: 'residence', contact: 2.0 },
+            { id: 10, name: 'Earhart', x: 650, y: 280, pop: 1800, type: 'residence', contact: 2.0 },
+            { id: 11, name: 'Hillenbrand', x: 700, y: 400, pop: 2000, type: 'residence', contact: 2.0 },
+            { id: 12, name: 'Harrison', x: 250, y: 480, pop: 1600, type: 'residence', contact: 2.0 },
+            { id: 13, name: 'Tarkington', x: 350, y: 500, pop: 1400, type: 'residence', contact: 2.0 },
+            { id: 14, name: 'PMU', x: 400, y: 400, pop: 5000, type: 'social', contact: 1.8 },
+            { id: 15, name: 'Rec Center', x: 550, y: 480, pop: 3000, type: 'social', contact: 1.6 },
+            { id: 16, name: 'Ford Dining', x: 450, y: 520, pop: 2000, type: 'dining', contact: 1.5 },
+            { id: 17, name: 'Wiley Dining', x: 200, y: 520, pop: 1800, type: 'dining', contact: 1.5 },
+            { id: 18, name: 'Ross-Ade', x: 100, y: 150, pop: 8000, type: 'athletic', contact: 3.0 },
+            { id: 19, name: 'Mackey Arena', x: 650, y: 150, pop: 4000, type: 'athletic', contact: 2.5 }
+        ];
+
+        // Disease parameters for SEIRS model
+        const diseases = {
+            covid: {
+                name: "COVID-19",
+                beta: 0.5,      // Transmission rate
+                sigma: 0.2,     // Incubation rate (1/5 days)
+                gamma: 0.1,     // Recovery rate (1/10 days)
+                xi: 1/90        // Immunity loss rate (1/90 days = 3 months)
+            },
+            flu: {
+                name: "Influenza",
+                beta: 0.8,
+                sigma: 0.5,     // Incubation rate (1/2 days)
+                gamma: 0.33,    // Recovery rate (1/3 days)
+                xi: 1/90
+            }
+        };
+
+        // Campus events
+        const campusEvents = [
+            { day: 20, name: "Football Game", buildings: [18], multiplier: 2.5, duration: 1 },
+            { day: 45, name: "Spring Break", multiplier: 0.3, duration: 7 },
+            { day: 52, name: "Return from Break", multiplier: 1.5, duration: 3 },
+            { day: 75, name: "Finals Week", multiplier: 0.6, duration: 5 },
+            { day: 100, name: "Homecoming", buildings: [18, 14, 15], multiplier: 2.0, duration: 2 }
+        ];
+
+        // Simulation state
+        let currentDisease = 'covid';
+        let currentDay = 0;
+        let isRunning = false;
+        let simulationInterval = null;
+        let speed = 100;
+        let maskingRate = 0;
+        let distancingRate = 0;
+        let vaccinationRate = 0;
+        let immunityDuration = 90;
+        let initialInfected = 10;
+
+        // Building states
+        let buildingStates = [];
+
+        // Canvas setup
+        const canvas = document.getElementById('campusCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Chart setup
+        let timeSeriesChart;
+        let chartData = {
+            labels: [],
+            susceptible: [],
+            exposed: [],
+            infected: [],
+            recovered: []
+        };
+
+        function initCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+
+        function initChart() {
+            const chartCanvas = document.getElementById('timeSeriesChart');
+            timeSeriesChart = new Chart(chartCanvas, {
+                type: 'line',
+                data: {
+                    labels: chartData.labels,
+                    datasets: [
+                        {
+                            label: 'Infected',
+                            data: chartData.infected,
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: 'Exposed',
+                            data: chartData.exposed,
+                            borderColor: '#eab308',
+                            backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: 'Recovered',
+                            data: chartData.recovered,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            labels: { color: '#fff', font: { size: 10 } }
+                        }
+                    },
+                    scales: {
+                        x: { 
+                            display: true,
+                            ticks: { color: '#999', font: { size: 9 } },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        y: { 
+                            display: true,
+                            ticks: { color: '#999', font: { size: 9 } },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function initSimulation() {
+            buildingStates = campusBuildings.map(building => ({
+                id: building.id,
+                S: building.pop * (1 - vaccinationRate / 100) - initialInfected / campusBuildings.length,
+                E: 0,
+                I: initialInfected / campusBuildings.length,
+                R: building.pop * (vaccinationRate / 100)
+            }));
+            
+            chartData = {
+                labels: [],
+                susceptible: [],
+                exposed: [],
+                infected: [],
+                recovered: []
+            };
+            currentDay = 0;
+            updateDisplay();
+        }
+
+        function getBuildingColor(state) {
+            const total = state.S + state.E + state.I + state.R;
+            const infectionRate = (state.I + state.E) / total;
+            
+            if (infectionRate === 0) return '#10b981';
+            if (infectionRate < 0.02) return '#84cc16';
+            if (infectionRate < 0.05) return '#eab308';
+            if (infectionRate < 0.10) return '#f97316';
+            if (infectionRate < 0.20) return '#ef4444';
+            return '#991b1b';
+        }
+
+        function getBuildingSize(type) {
+            switch(type) {
+                case 'athletic': return { w: 60, h: 40 };
+                case 'social': return { w: 50, h: 35 };
+                case 'residence': return { w: 40, h: 40 };
+                case 'dining': return { w: 35, h: 30 };
+                default: return { w: 40, h: 30 };
+            }
+        }
+
+        function drawCampus() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            for (let x = 0; x < canvas.width; x += 40) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += 40) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Draw campus paths
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 5]);
+            ctx.strokeRect(100, 100, 600, 450);
+            ctx.beginPath();
+            ctx.moveTo(400, 100);
+            ctx.lineTo(400, 550);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(100, 325);
+            ctx.lineTo(700, 325);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Draw buildings
+            campusBuildings.forEach((building, idx) => {
+                const state = buildingStates[idx];
+                const size = getBuildingSize(building.type);
+                const color = getBuildingColor(state);
+                const infectionRate = ((state.I + state.E) / (state.S + state.E + state.I + state.R) * 100).toFixed(1);
+                
+                // Shadow
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                ctx.fillRect(building.x - size.w/2 + 3, building.y - size.h/2 + 3, size.w, size.h);
+                
+                // Building
+                ctx.fillStyle = color;
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.fillRect(building.x - size.w/2, building.y - size.h/2, size.w, size.h);
+                ctx.strokeRect(building.x - size.w/2, building.y - size.h/2, size.w, size.h);
+                
+                // Infection indicator
+                if (state.I > 0) {
+                    const pulse = Math.sin(Date.now() / 300) * 0.3 + 0.7;
+                    ctx.fillStyle = `rgba(239, 68, 68, ${pulse})`;
+                    ctx.beginPath();
+                    ctx.arc(building.x, building.y - size.h/2 - 8, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                
+                // Labels
+                ctx.fillStyle = '#e5e7eb';
+                ctx.font = 'bold 11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(building.name, building.x, building.y + size.h/2 + 15);
+                
+                ctx.fillStyle = '#fbbf24';
+                ctx.font = '10px sans-serif';
+                ctx.fillText(infectionRate + '%', building.x, building.y + size.h/2 + 27);
+            });
+        }
+
+        function getCurrentEvent() {
+            return campusEvents.find(e => 
+                currentDay >= e.day && currentDay < e.day + (e.duration || 1)
+            );
+        }
+
+        function simulateStep() {
+            const params = diseases[currentDisease];
+            const event = getCurrentEvent();
+            const maskEffect = 1 - (maskingRate / 100) * 0.5;
+            const distanceEffect = 1 - (distancingRate / 100) * 0.4;
+            
+            // Update xi based on immunity duration slider
+            const xi = 1 / immunityDuration;
+            
+            buildingStates = buildingStates.map((state, idx) => {
+                const building = campusBuildings[idx];
+                
+                let eventMultiplier = 1.0;
+                if (event) {
+                    if (event.buildings && event.buildings.includes(building.id)) {
+                        eventMultiplier = event.multiplier;
+                    } else if (!event.buildings) {
+                        eventMultiplier = event.multiplier;
+                    }
+                }
+                
+                const contactMultiplier = building.contact || 1.0;
+                
+                const beta = params.beta * maskEffect * distanceEffect * eventMultiplier * contactMultiplier;
+                
+                const N = state.S + state.E + state.I + state.R;
+                
+                // SEIRS equations (added xi for immunity waning)
+                const dS = -(beta * state.S * state.I) / N + xi * state.R; // Recovered become susceptible again
+                const dE = (beta * state.S * state.I) / N - params.sigma * state.E;
+                const dI = params.sigma * state.E - params.gamma * state.I;
+                const dR = params.gamma * state.I - xi * state.R; // Lose immunity over time
+                
+                // Inter-building transmission
+                const mobilityRate = 0.05;
+                const avgInfectedRate = buildingStates.reduce((sum, s) => sum + s.I, 0) / 
+                                       buildingStates.reduce((sum, s) => sum + s.S + s.E + s.I + s.R, 0);
+                
+                const externalExposure = mobilityRate * avgInfectedRate * state.S * beta;
+                
+                return {
+                    id: state.id,
+                    S: Math.max(0, state.S + dS - externalExposure * 0.1),
+                    E: Math.max(0, state.E + dE + externalExposure * 0.1),
+                    I: Math.max(0, state.I + dI),
+                    R: Math.max(0, state.R + dR)
+                };
+            });
+            
+            currentDay++;
+            updateDisplay();
+        }
+
+        function updateDisplay() {
+            document.getElementById('dayCounter').textContent = currentDay;
+            
+            // Calculate totals
+            const totals = buildingStates.reduce((acc, state) => ({
+                S: acc.S + state.S,
+                E: acc.E + state.E,
+                I: acc.I + state.I,
+                R: acc.R + state.R
+            }), { S: 0, E: 0, I: 0, R: 0 });
+            
+            const totalPop = totals.S + totals.E + totals.I + totals.R;
+            
+            // Update stat cards
+            document.getElementById('infectedCount').textContent = Math.round(totals.I).toLocaleString();
+            document.getElementById('infectedPercent').textContent = ((totals.I/totalPop)*100).toFixed(2) + '% of campus';
+            
+            document.getElementById('exposedCount').textContent = Math.round(totals.E).toLocaleString();
+            document.getElementById('exposedPercent').textContent = ((totals.E/totalPop)*100).toFixed(2) + '% of campus';
+            
+            document.getElementById('recoveredCount').textContent = Math.round(totals.R).toLocaleString();
+            document.getElementById('recoveredPercent').textContent = ((totals.R/totalPop)*100).toFixed(2) + '% of campus';
+            
+            document.getElementById('susceptibleCount').textContent = Math.round(totals.S).toLocaleString();
+            document.getElementById('susceptiblePercent').textContent = ((totals.S/totalPop)*100).toFixed(2) + '% of campus';
+            
+            // Update chart
+            if (currentDay % 5 === 0) { // Update chart every 5 days to keep it readable
+                chartData.labels.push(currentDay);
+                chartData.susceptible.push(Math.round(totals.S));
+                chartData.exposed.push(Math.round(totals.E));
+                chartData.infected.push(Math.round(totals.I));
+                chartData.recovered.push(Math.round(totals.R));
+                
+                if (chartData.labels.length > 30) {
+                    chartData.labels.shift();
+                    chartData.susceptible.shift();
+                    chartData.exposed.shift();
+                    chartData.infected.shift();
+                    chartData.recovered.shift();
+                }
+                
+                timeSeriesChart.update('none');
+            }
+            
+            // Update hotspots
+            const hotspots = buildingStates
+                .map((state, idx) => ({
+                    name: campusBuildings[idx].name,
+                    rate: (state.I + state.E) / (state.S + state.E + state.I + state.R)
+                }))
+                .filter(b => b.rate > 0.05)
+                .sort((a, b) => b.rate - a.rate)
+                .slice(0, 5);
+            
+            const hotspotList = document.getElementById('hotspotList');
+            if (hotspots.length > 0) {
+                hotspotList.innerHTML = hotspots.map(h => 
+                    `<div class="hotspot-item">
+                        <span>${h.name}</span>
+                        <span class="hotspot-rate">${(h.rate * 100).toFixed(1)}%</span>
+                    </div>`
+                ).join('');
+            } else {
+                hotspotList.innerHTML = '<div style="color: #10b981; font-size: 11px;">✓ All buildings safe</div>';
+            }
+            
+            // Update event notification
+            const event = getCurrentEvent();
+            const notification = document.getElementById('eventNotification');
+            if (event) {
+                document.getElementById('eventName').textContent = event.name;
+                notification.classList.add('active');
+            } else {
+                notification.classList.remove('active');
+            }
+            
+            // Draw canvas
+            drawCampus();
+        }
+
+        function toggleSimulation() {
+            isRunning = !isRunning;
+            const playText = document.getElementById('playText');
+            
+            if (isRunning) {
+                playText.textContent = '⏸ Pause';
+                simulationInterval = setInterval(simulateStep, speed);
+            } else {
+                playText.textContent = '▶ Play';
+                clearInterval(simulationInterval);
+            }
+        }
+
+        function resetSimulation() {
+            isRunning = false;
+            document.getElementById('playText').textContent = '▶ Play';
+            clearInterval(simulationInterval);
+            initSimulation();
+            drawCampus();
+        }
+
+        function setDisease(disease) {
+            currentDisease = disease;
+            document.querySelectorAll('.disease-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`.disease-btn.${disease === 'covid' ? 'covid' : 'flu'}`).classList.add('active');
+            resetSimulation();
+        }
+
+        function updateSpeed() {
+            const slider = document.getElementById('speedSlider');
+            speed = parseInt(slider.value);
+            const speedMultiplier = (1000 / speed).toFixed(1);
+            document.getElementById('speedValue').textContent = speedMultiplier;
+            
+            if (isRunning) {
+                clearInterval(simulationInterval);
+                simulationInterval = setInterval(simulateStep, speed);
+            }
+        }
+
+        function updateMasking() {
+            maskingRate = parseInt(document.getElementById('maskingSlider').value);
+            document.getElementById('maskingValue').textContent = maskingRate;
+        }
+
+        function updateDistancing() {
+            distancingRate = parseInt(document.getElementById('distancingSlider').value);
+            document.getElementById('distancingValue').textContent = distancingRate;
+        }
+
+        function updateVaccination() {
+            vaccinationRate = parseInt(document.getElementById('vaccinationSlider').value);
+            document.getElementById('vaccinationValue').textContent = vaccinationRate;
+        }
+
+        function updateImmunity() {
+            immunityDuration = parseInt(document.getElementById('immunitySlider').value);
+            document.getElementById('immunityValue').textContent = immunityDuration;
+        }
+
+        function updateInitialInfected() {
+            initialInfected = parseInt(document.getElementById('initialInfectedSlider').value);
+            document.getElementById('initialInfectedValue').textContent = initialInfected;
+        }
+
+        // Initialize on load
+        window.addEventListener('load', () => {
+            initCanvas();
+            initChart();
+            initSimulation();
+            drawCampus();
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            initCanvas();
+            drawCampus();
+        });
+
+        // Animation loop for smooth pulsing effects
+        function animate() {
+            drawCampus();
+            requestAnimationFrame(animate);
+        }
+        animate();
+    </script>
+</body>
+</html>
